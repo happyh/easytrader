@@ -3,9 +3,9 @@ import json
 import os
 import re
 import time
+from numbers import Number
 
 import requests
-from six.moves.urllib.parse import urlencode
 
 from .log import log
 from .webtrader import NotLoginError, TradeError
@@ -15,8 +15,16 @@ from .webtrader import WebTrader
 class XueQiuTrader(WebTrader):
     config_path = os.path.dirname(__file__) + '/config/xq.json'
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         super(XueQiuTrader, self).__init__()
+
+        # 资金换算倍数
+        self.multiple = kwargs['initial_assets'] if 'initial_assets' in kwargs else 1000000
+        if not isinstance(self.multiple, Number):
+            raise TypeError('initial assets must be number(int, float)')
+        if self.multiple < 1e3:
+            raise ValueError('雪球初始资产不能小于1000元，当前预设值 {}'.format(self.multiple))
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:32.0) Gecko/20100101 Firefox/32.0',
             'Host': 'xueqiu.com',
@@ -32,7 +40,6 @@ class XueQiuTrader(WebTrader):
         self.session = requests.Session()
         self.session.headers.update(headers)
         self.account_config = None
-        self.multiple = 1000000  # 资金换算倍数
 
     def autologin(self, **kwargs):
         """
@@ -54,16 +61,40 @@ class XueQiuTrader(WebTrader):
         log.debug('login status: %s' % result)
         return login_status
 
+    def _prepare_account(self, user='', password='', **kwargs):
+        """
+        转换参数到登录所需的字典格式
+        :param user: 雪球邮箱(邮箱手机二选一)
+        :param password: 雪球密码
+        :param account: 雪球手机号(邮箱手机二选一)
+        :param portfolio_code: 组合代码
+        :param portfolio_market: 交易市场， 可选['cn', 'us', 'hk'] 默认 'cn'
+        :return:
+        """
+        if 'portfolio_code' not in kwargs:
+            raise TypeError('雪球登录需要设置 portfolio_code(组合代码) 参数')
+        if 'portfolio_market' not in kwargs:
+            kwargs['portfolio_market'] = 'cn'
+        if 'account' not in kwargs:
+            kwargs['account'] = ''
+        self.account_config = {
+            'username': user,
+            'account': kwargs['account'],
+            'password': password,
+            'portfolio_code': kwargs['portfolio_code'],
+            'portfolio_market': kwargs['portfolio_market']
+        }
+
     def post_login_data(self):
         login_post_data = {
             'username': self.account_config.get('username', ''),
             'areacode': '86',
-            'telephone': self.account_config['account'],
-            'remember_me': '0',
+            # 'telephone': self.account_config['account'],
+            # 'remember_me': '0',
             'password': self.account_config['password']
         }
         login_response = self.session.post(self.config['login_api'], data=login_post_data)
-        login_status = json.loads(login_response.text)
+        login_status = login_response.json()
         if 'error_description' in login_status:
             return False, login_status['error_description']
         return True, "SUCCESS"
@@ -188,42 +219,48 @@ class XueQiuTrader(WebTrader):
         """
         data = {
             "cube_symbol": str(self.account_config['portfolio_code']),
-            'count': 5,
+            'count': 20,
             'page': 1
         }
         r = self.session.get(self.config['history_url'], params=data)
         r = json.loads(r.text)
         return r['list']
 
+    @property
+    def history(self):
+        return self.__get_xq_history()
+
     def get_entrust(self):
         """
-        获取委托单(目前返回5次调仓的结果)
+        获取委托单(目前返回20次调仓的结果)
         操作数量都按1手模拟换算的
         :return:
         """
         xq_entrust_list = self.__get_xq_history()
         entrust_list = []
+        replace_none = lambda s: s or 0
         for xq_entrusts in xq_entrust_list:
             status = xq_entrusts['status']  # 调仓状态
             if status == 'pending':
                 status = "已报"
-            elif status == 'canceled':
+            elif status in ['canceled','failed']:
                 status = "废单"
             else:
                 status = "已成"
             for entrust in xq_entrusts['rebalancing_histories']:
-                volume = abs(entrust['target_weight'] - entrust['weight']) * self.multiple / 10000
+                volume = abs(entrust['target_weight'] - replace_none(entrust['prev_weight'])) * self.multiple / 10000
+                price = entrust['price']
                 entrust_list.append({
                     'entrust_no': entrust['id'],
-                    'entrust_bs': u"买入" if entrust['target_weight'] > entrust['weight'] else u"卖出",
+                    'entrust_bs': u"买入" if entrust['target_weight'] > replace_none(entrust['prev_weight']) else u"卖出",
                     'report_time': self.__time_strftime(entrust['updated_at']),
                     'entrust_status': status,
                     'stock_code': entrust['stock_symbol'],
                     'stock_name': entrust['stock_name'],
                     'business_amount': 100,
-                    'business_price': volume,
+                    'business_price': price,
                     'entrust_amount': 100,
-                    'entrust_price': volume,
+                    'entrust_price': price,
                 })
         return entrust_list
 
@@ -245,7 +282,7 @@ class XueQiuTrader(WebTrader):
                         raise TradeError(u"移除的股票操作无法撤销,建议重新买入")
                     balance = self.get_balance()[0]
                     volume = abs(entrust['target_weight'] - entrust['weight']) * balance['asset_balance'] / 100
-                    r = self.__trade(stock_code=entrust['stock_symbol'], volume=volume, entrust_bs=bs)
+                    r = self.__trade(security=entrust['stock_symbol'], volume=volume, entrust_bs=bs)
                     if len(r) > 0 and 'error_info' in r[0]:
                         raise TradeError(u"撤销失败!%s" % ('error_info' in r[0]))
         if not is_have:
@@ -302,16 +339,16 @@ class XueQiuTrader(WebTrader):
         remain_weight = 100 - sum(i.get('weight') for i in position_list)
         cash = round(remain_weight, 2)
         log.debug("调仓比例:%f, 剩余持仓 :%f" % (weight, remain_weight))
-        data = urlencode({
+        data = {
             "cash": cash,
             "holdings": str(json.dumps(position_list)),
             "cube_symbol": str(self.account_config['portfolio_code']),
             'segment': 'true',
             'comment': ""
-        })
+        }
 
         try:
-            rebalance_res = self.session.post(self.config['rebalance_url'], params=data)
+            rebalance_res = self.session.post(self.config['rebalance_url'], data=data)
         except Exception as e:
             log.warn('调仓失败: %s ' % e)
             return
@@ -325,17 +362,17 @@ class XueQiuTrader(WebTrader):
             else:
                 log.debug('调仓成功 %s: 持仓比例%d' % (stock['name'], weight))
 
-    def __trade(self, stock_code, price=0, amount=0, volume=0, entrust_bs='buy'):
+    def __trade(self, security, price=0, amount=0, volume=0, entrust_bs='buy'):
         """
         调仓
-        :param stock_code:
+        :param security:
         :param price:
         :param amount:
         :param volume:
         :param entrust_bs:
         :return:
         """
-        stock = self.__search_stock_info(stock_code)
+        stock = self.__search_stock_info(security)
         balance = self.get_balance()[0]
         if stock is None:
             raise TradeError(u"没有查询要操作的股票信息")
@@ -369,6 +406,7 @@ class XueQiuTrader(WebTrader):
                         raise TradeError(u"操作数量大于实际可卖出数量")
                     else:
                         position['weight'] = old_weight - weight
+                position['weight'] = round(position['weight'], 2)
         if not is_have:
             if entrust_bs == 'buy':
                 position_list.append({
@@ -387,7 +425,7 @@ class XueQiuTrader(WebTrader):
                     "ind_color": stock['ind_color'],
                     "textname": stock['name'],
                     "segment_name": stock['ind_name'],
-                    "weight": weight,
+                    "weight": round(weight, 2),
                     "url": "/S/" + stock['code'],
                     "proactive": True,
                     "price": str(stock['current'])
@@ -402,16 +440,16 @@ class XueQiuTrader(WebTrader):
         cash = round(cash, 2)
         log.debug("weight:%f, cash:%f" % (weight, cash))
 
-        data = urlencode({
+        data = {
             "cash": cash,
             "holdings": str(json.dumps(position_list)),
             "cube_symbol": str(self.account_config['portfolio_code']),
             'segment': 1,
             'comment': ""
-        })
+        }
 
         try:
-            rebalance_res = self.session.post(self.config['rebalance_url'], params=data)
+            rebalance_res = self.session.post(self.config['rebalance_url'], data=data)
         except Exception as e:
             log.warn('调仓失败: %s ' % e)
             return
@@ -431,27 +469,27 @@ class XueQiuTrader(WebTrader):
                          'entrust_time': self.__time_strftime(rebalance_status['updated_at']),
                          'entrust_price': price,
                          'entrust_amount': amount,
-                         'stock_code': stock_code,
+                         'stock_code': security,
                          'entrust_bs': '买入',
                          'entrust_type': '雪球虚拟委托',
                          'entrust_status': '-'}]
 
-    def buy(self, stock_code, price=0, amount=0, volume=0, entrust_prop=0):
+    def buy(self, security, price=0, amount=0, volume=0, entrust_prop=0):
         """买入卖出股票
-        :param stock_code: 股票代码
+        :param security: 股票代码
         :param price: 买入价格
         :param amount: 买入股数
         :param volume: 买入总金额 由 volume / price 取整， 若指定 price 则此参数无效
         :param entrust_prop:
         """
-        return self.__trade(stock_code, price, amount, volume, 'buy')
+        return self.__trade(security, price, amount, volume, 'buy')
 
-    def sell(self, stock_code, price=0, amount=0, volume=0, entrust_prop=0):
+    def sell(self, security, price=0, amount=0, volume=0, entrust_prop=0):
         """卖出股票
-        :param stock_code: 股票代码
+        :param security: 股票代码
         :param price: 卖出价格
         :param amount: 卖出股数
         :param volume: 卖出总金额 由 volume / price 取整， 若指定 price 则此参数无效
         :param entrust_prop:
         """
-        return self.__trade(stock_code, price, amount, volume, 'sell')
+        return self.__trade(security, price, amount, volume, 'sell')
