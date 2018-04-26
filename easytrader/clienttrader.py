@@ -132,6 +132,7 @@ class ClientTrader:
 
     @property
     def balance(self):
+        self.SwitchCustomTabCtrlStock()
         self._switch_left_menus(['查询[F4]', '资金股票'])
 
         return self._get_balance_from_statics()
@@ -180,6 +181,11 @@ class ClientTrader:
                 return self._handle_pop_dialogs()
         else:
             return {'message': '委托单状态错误不能撤单, 该委托单可能已经成交或者已撤'}
+
+    def hkbuy(self, security, price, amount, **kwargs):
+        self._switch_left_menus(['买入[F1]'])
+
+        return self.trade(security, price, amount)
 
     def buy(self, security, price, amount, **kwargs):
         self._switch_left_menus(['买入[F1]'])
@@ -347,8 +353,14 @@ class ClientTrader:
 
         self._type_keys(
             self._config.TRADE_PRICE_CONTROL_ID,
+            '{BACKSPACE 10}'
+        )
+
+        self._type_keys(
+            self._config.TRADE_PRICE_CONTROL_ID,
             easyutils.round_price_by_code(price, code)
         )
+
         self._type_keys(
             self._config.TRADE_AMOUNT_CONTROL_ID,
             str(int(amount))
@@ -400,6 +412,35 @@ class ClientTrader:
     def _switch_left_menus_by_shortcut(self, shortcut, sleep=0.5):
         self._app.top_window().type_keys(shortcut)
         self._wait(sleep)
+
+    def SwitchCustomTabCtrl(self, pos_x,pos_y):
+        rect = self._get_CCustomTabCtrl().ClientRect()
+        x = rect.width() // 8
+        y = rect.height() // 4
+        x *= pos_x
+        y *= pos_y
+        self._get_CCustomTabCtrl().ClickInput(coords=(x, y))
+        time.sleep(1)
+
+    def SwitchCustomTabCtrlHK(self):
+        self.SwitchCustomTabCtrl(5, 1)
+
+    def SwitchCustomTabCtrlStock(self):
+        self.SwitchCustomTabCtrl(pos_x=1, pos_y=1)
+
+    @functools.lru_cache()
+    def _get_CCustomTabCtrl(self):
+        while True:
+            try:
+                handle = self._main.window(
+                    control_id=1001,
+                    class_name='CCustomTabCtrl'
+                )
+                # sometime can't find handle ready, must retry
+                handle.wait('ready', 2)
+                return handle
+            except:
+                pass
 
     @functools.lru_cache()
     def _get_left_menus_handle(self):

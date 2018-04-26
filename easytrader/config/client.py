@@ -8,6 +8,8 @@ def create(broker):
         return HT
     elif broker == 'gj':
         return GJ
+    elif broker == 'gf':
+        return GF
     elif broker == 'ths':
         return CommonConfig
     raise NotImplemented
@@ -132,3 +134,8 @@ class GJ(CommonConfig):
     }
 
     AUTO_IPO_MENU_PATH = ['新股申购', '新股批量申购']
+
+class GF(CommonConfig):
+    DEFAULT_EXE_PATH = r'C:\\广发证券至诚版\\V7.63\xiadan.exe'
+
+    TITLE = '广发证券核新网上交易系统7.63'

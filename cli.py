@@ -9,18 +9,17 @@ import easytrader
 
 ACCOUNT_OBJECT_FILE = 'account.session'
 
-
 @click.command()
 @click.option('--use', help='指定券商 [ht, yjb, yh]')
 @click.option('--prepare', type=click.Path(exists=True), help='指定登录账户文件路径')
 @click.option('--get', help='调用 easytrader 中对应的变量')
 @click.option('--do', help='调用 easytrader 中对应的函数名')
-@click.option('--debug', default=False, help='是否输出 easytrader 的 debug 日志')
+@click.option('--debug', default=True, help='是否输出 easytrader 的 debug 日志')
 @click.argument('params', nargs=-1)
 def main(prepare, use, do, get, params, debug):
     if get is not None:
         do = get
-    if prepare is not None and use in ['ht_client', 'yjb', 'yh_client','yh','ht', 'gf', 'xq']:
+    if prepare is not None and use in ['ht_client', 'yh_client', 'gf_client', 'xq']:
         user = easytrader.use(use, debug)
         user.prepare(prepare)
         with open(ACCOUNT_OBJECT_FILE, 'wb') as f:
@@ -28,7 +27,6 @@ def main(prepare, use, do, get, params, debug):
     if do is not None:
         with open(ACCOUNT_OBJECT_FILE, 'rb') as f:
             user = dill.load(f)
-
         if get is not None:
             result = getattr(user, do)
         else:
