@@ -75,3 +75,10 @@ class GFClientTrader(ClientTrader):
         time.sleep(0.2)
         vcode = helpers.recognize_verify_code(file_path, 'gj_client')
         return ''.join(re.findall('[a-zA-Z0-9]+', vcode))
+
+    @property
+    def balance(self):
+        self.SwitchCustomTabCtrlStock()
+        self._switch_left_menus(['查询[F4]', '资金股票'])
+
+        return self._get_balance_from_statics()

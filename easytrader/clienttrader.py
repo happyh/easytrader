@@ -132,7 +132,6 @@ class ClientTrader:
 
     @property
     def balance(self):
-        self.SwitchCustomTabCtrlStock()
         self._switch_left_menus(['查询[F4]', '资金股票'])
 
         return self._get_balance_from_statics()
@@ -183,7 +182,7 @@ class ClientTrader:
             return {'message': '委托单状态错误不能撤单, 该委托单可能已经成交或者已撤'}
 
     def hkbuy(self, security, price, amount, **kwargs):
-        self._switch_left_menus(['买入[F1]'])
+        self._switch_left_menus(['买入'])
 
         return self.trade(security, price, amount)
 
